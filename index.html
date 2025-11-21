@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetSim Pro - Packets & Themes</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; overflow: hidden; }
+        .no-select { user-select: none; -webkit-user-select: none; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.5); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.8); }
+        
+        /* Halo text effect for readability */
+        .text-halo { 
+            paint-order: stroke fill;
+            stroke-width: 4px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useMemo } = React;
+
+        // --- HELPER: Geometry Math ---
+        // Calculates the curve path between two nodes.
+        // Returns the path string 'd' and the center control point 'cx, cy'
+        const getLinkGeometry = (link, nodes, links) => {
+            const nodeA_ID = link.source < link.target ? link.source : link.target;
+            const nodeB_ID = link.source < link.target ? link.target : link.source;
+            
+            const nodeA = nodes.find(n => n.id === nodeA_ID);
+            const nodeB = nodes.find(n => n.id === nodeB_ID);
+            
+            if(!nodeA || !nodeB) return null;
+
+            const siblings = links.filter(l => 
+                (l.source === nodeA_ID && l.target === nodeB_ID) || 
+                (l.source === nodeB_ID && l.target === nodeA_ID)
+            ).sort((a, b) => a.id.localeCompare(b.id));
+
+            const idx = siblings.findIndex(l => l.id === link.id);
+            const count = siblings.length;
+
+            const midX = (nodeA.position.x + nodeB.position.x) / 2;
+            const midY = (nodeA.position.y + nodeB.position.y) / 2;
+            const dx = nodeB.position.x - nodeA.position.x; 
+            const dy = nodeB.position.y - nodeA.position.y;
+            const len = Math.sqrt(dx*dx + dy*dy) || 1;
+            const nx = -dy/len; 
+            const ny = dx/len;
+            
+            const offsetAmt = (idx - (count-1)/2) * 50; 
+            const cx = midX + nx * offsetAmt;
+            const cy = midY + ny * offsetAmt;
+
+            // Real source/target might be swapped relative to sorted A/B
+            const realSource = nodes.find(n => n.id === link.source);
+            const realTarget = nodes.find(n => n.id === link.target);
+
+            // Path from Real Source -> Real Target (passing through the calculated center)
+            const d = `M ${realSource.position.x} ${realSource.position.y} Q ${cx} ${cy} ${realTarget.position.x} ${realTarget.position.y}`;
+            
+            return { d, cx, cy };
+        };
+
+        // --- Data Structures ---
+        class MinHeap {
+            constructor() { this.heap = []; }
+            push(key, value) { this.heap.push({ key, value }); this.bubbleUp(this.heap.length - 1); }
+            pop() {
+                if (this.heap.length === 0) return undefined;
+                const top = this.heap[0];
+                const end = this.heap.pop();
+                if (this.heap.length > 0) { this.heap[0] = end; this.bubbleDown(0); }
+                return top;
+            }
+            get size() { return this.heap.length; }
+            bubbleUp(index) {
+                while (index > 0) {
+                    const parent = Math.floor((index - 1) / 2);
+                    if (this.heap[index].key >= this.heap[parent].key) break;
+                    [this.heap[index], this.heap[parent]] = [this.heap[parent], this.heap[index]];
+                    index = parent;
+                }
+            }
+            bubbleDown(index) {
+                const length = this.heap.length;
+                while (true) {
+                    const left = index * 2 + 1;
+                    const right = index * 2 + 2;
+                    let smallest = index;
+                    if (left < length && this.heap[left].key < this.heap[smallest].key) smallest = left;
+                    if (right < length && this.heap[right].key < this.heap[smallest].key) smallest = right;
+                    if (smallest === index) break;
+                    [this.heap[index], this.heap[smallest]] = [this.heap[smallest], this.heap[index]];
+                    index = smallest;
+                }
+            }
+        }
+
+        // Dijkstra Algo
+        function dijkstra(nodes, links, startId, endId) {
+            const startNode = nodes.find(n => n.id === startId);
+            const endNode = nodes.find(n => n.id === endId);
+            
+            if (!startNode || startNode.active === false || !endNode || endNode.active === false) return null;
+            if (startId === endId) return null;
+
+            const adj = {};
+            nodes.forEach((n) => (adj[n.id] = []));
+
+            links.forEach((l) => {
+                if (!l.active) return;
+                adj[l.source].push({ to: l.target, cost: parseInt(l.metric, 10), linkId: l.id });
+                adj[l.target].push({ to: l.source, cost: parseInt(l.metric, 10), linkId: l.id });
+            });
+
+            const dist = {};
+            const parents = {};
+            nodes.forEach((n) => {
+                dist[n.id] = Infinity;
+                parents[n.id] = [];
+            });
+
+            dist[startId] = 0;
+            const pq = new MinHeap();
+            pq.push(0, startId);
+
+            while (pq.size > 0) {
+                const current = pq.pop();
+                if (!current) break;
+                const u = current.value;
+                const d = current.key;
+
+                if (d > dist[u]) continue;
+                if (u === endId) break;
+
+                for (const edge of adj[u] || []) {
+                    const targetNode = nodes.find(n => n.id === edge.to);
+                    if (!targetNode || targetNode.active === false) continue;
+
+                    const alt = dist[u] + edge.cost;
+                    if (alt < dist[edge.to]) {
+                        dist[edge.to] = alt;
+                        parents[edge.to] = [{ id: u, linkId: edge.linkId }];
+                        pq.push(alt, edge.to);
+                    } else if (alt === dist[edge.to]) {
+                        parents[edge.to].push({ id: u, linkId: edge.linkId });
+                    }
+                }
+            }
+
+            if (dist[endId] === Infinity) return null;
+
+            const buildPaths = (nodeId) => {
+                if (nodeId === startId) return [{ nodes: [startId], links: [] }];
+                const prevs = parents[nodeId];
+                if (!prevs || prevs.length === 0) return [];
+
+                let results = [];
+                for (const prev of prevs) {
+                    const parentPaths = buildPaths(prev.id);
+                    for (const pp of parentPaths) {
+                        results.push({
+                            nodes: [...pp.nodes, nodeId],
+                            links: [...pp.links, prev.linkId] 
+                        });
+                    }
+                }
+                return results;
+            };
+
+            const allPaths = buildPaths(endId);
+            if (allPaths.length === 0) return null;
+
+            return { paths: allPaths, distance: dist[endId] };
+        }
+
+        // --- Main App Component ---
+        const NetworkMetricSimulator = () => {
+            // --- THEME STATE ---
+            const [theme, setTheme] = useState(() => localStorage.getItem('netsim_theme') || 'dark');
+            useEffect(() => { localStorage.setItem('netsim_theme', theme); }, [theme]);
+
+            // --- THEME CONFIG ---
+            const colors = useMemo(() => {
+                const isDark = theme === 'dark';
+                return {
+                    bg: isDark ? 'bg-slate-950' : 'bg-slate-50',
+                    text: isDark ? 'text-slate-100' : 'text-slate-800',
+                    textDim: isDark ? 'text-slate-400' : 'text-slate-500',
+                    panel: isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200',
+                    input: isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-100 border-slate-300 text-slate-800',
+                    gridStroke: isDark ? '#1e293b' : '#e2e8f0',
+                    linkInactive: isDark ? '#334155' : '#cbd5e1',
+                    linkDim: isDark ? 'opacity-30' : 'opacity-30',
+                    nodeDefault: isDark ? '#64748b' : '#94a3b8',
+                    textHalo: isDark ? '#020617' : '#f8fafc',
+                    packet: isDark ? '#ffffff' : '#0f172a', // White packet on dark, Black packet on light
+                };
+            }, [theme]);
+
+            const [nodes, setNodes] = useState(() => {
+                const saved = localStorage.getItem('netsim_nodes');
+                const parsed = saved ? JSON.parse(saved) : [];
+                return parsed.map(n => ({...n, active: n.active !== false})); 
+            });
+            const [links, setLinks] = useState(() => {
+                const saved = localStorage.getItem('netsim_links');
+                return saved ? JSON.parse(saved) : [];
+            });
+
+            const [mode, setMode] = useState("idle");
+            const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
+            const [scale, setScale] = useState(1);
+            const [searchQuery, setSearchQuery] = useState("");
+
+            const [isPanning, setIsPanning] = useState(false);
+            const [isDraggingNodes, setIsDraggingNodes] = useState(false);
+            const [mouseStart, setMouseStart] = useState({ x: 0, y: 0 });
+
+            const [selectedNodeIds, setSelectedNodeIds] = useState([]); 
+            const [selectedLinkId, setSelectedLinkId] = useState(null); 
+            
+            const [linkFromNodeId, setLinkFromNodeId] = useState(null);
+            const [startNodeId, setStartNodeId] = useState("");
+            const [endNodeId, setEndNodeId] = useState("");
+            
+            const [route, setRoute] = useState(null); 
+            const [routes, setRoutes] = useState([]);
+            const [activeRouteIndex, setActiveRouteIndex] = useState(null);
+            const [totalMetric, setTotalMetric] = useState(null);
+
+            const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, type: "canvas" });
+            const [nodeEditor, setNodeEditor] = useState({ open: false, nodeId: null, name: "", color: "", active: true });
+            const [linkEditor, setLinkEditor] = useState({ open: false, linkId: null, metric: 10, name: "", active: true, sourceId: "", targetId: "" });
+
+            const svgRef = useRef(null);
+            const fileInputRef = useRef(null);
+            const backdropMouseDownRef = useRef(false);
+
+            useEffect(() => {
+                localStorage.setItem('netsim_nodes', JSON.stringify(nodes));
+                localStorage.setItem('netsim_links', JSON.stringify(links));
+            }, [nodes, links]);
+
+            const getNextNodeId = () => {
+                const numbers = nodes.map((n) => parseInt(n.id.replace(/[^0-9]/g, ""), 10)).filter((n) => !isNaN(n));
+                const next = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
+                return `N${next}`;
+            };
+
+            const getNextLinkId = () => {
+                const numbers = links.map((l) => parseInt(l.id.replace(/[^0-9]/g, ""), 10)).filter((n) => !isNaN(n));
+                const next = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
+                return `L${next}`;
+            };
+
+            const clearRoute = () => {
+                setRoute(null); setRoutes([]); setTotalMetric(null); setActiveRouteIndex(null); setStartNodeId(""); setEndNodeId("");
+            };
+
+            const getMouseWorldCoords = (clientX, clientY) => {
+                if (!svgRef.current) return { x: 0, y: 0 };
+                const rect = svgRef.current.getBoundingClientRect();
+                return {
+                    x: (clientX - rect.left - viewOffset.x) / scale,
+                    y: (clientY - rect.top - viewOffset.y) / scale
+                };
+            };
+
+            const getSmartLabelProps = (node) => {
+                let dxSum = 0; let dySum = 0; let linkCount = 0;
+                links.forEach(l => {
+                    let otherId = null;
+                    if (l.source === node.id) otherId = l.target;
+                    else if (l.target === node.id) otherId = l.source;
+                    if (otherId) {
+                        const other = nodes.find(n => n.id === otherId);
+                        if (other) {
+                            const diffX = other.position.x - node.position.x;
+                            const diffY = other.position.y - node.position.y;
+                            const dist = Math.sqrt(diffX*diffX + diffY*diffY) || 1;
+                            dxSum += diffX / dist; dySum += diffY / dist; linkCount++;
+                        }
+                    }
+                });
+                if (linkCount === 0) return { x: 0, y: 40, anchor: 'middle' };
+                const dirX = -dxSum; const dirY = -dySum;
+                if (Math.abs(dirX) > Math.abs(dirY)) {
+                    return dirX > 0 ? { x: 34, y: 4, anchor: 'start' } : { x: -34, y: 4, anchor: 'end' };
+                } else {
+                    return dirY > 0 ? { x: 0, y: 40, anchor: 'middle' } : { x: 0, y: -32, anchor: 'middle' };
+                }
+            };
+
+            const handleBackdropMouseDown = (e) => { backdropMouseDownRef.current = (e.target === e.currentTarget); };
+            const handleBackdropClick = (e, closeFn) => { if (backdropMouseDownRef.current && e.target === e.currentTarget) closeFn(); backdropMouseDownRef.current = false; };
+
+            const handleSearch = () => {
+                if (!searchQuery.trim()) return;
+                const query = searchQuery.toLowerCase();
+                const found = nodes.find(n => n.id.toLowerCase() === query || n.name.toLowerCase().includes(query));
+                if (found) {
+                    const windowW = window.innerWidth; const windowH = window.innerHeight;
+                    const newOffsetX = (windowW / 2) - (found.position.x * scale);
+                    const newOffsetY = (windowH / 2) - (found.position.y * scale);
+                    setViewOffset({ x: newOffsetX, y: newOffsetY });
+                    setSelectedNodeIds([found.id]);
+                    setSelectedLinkId(null);
+                } else {
+                    alert("Node not found");
+                }
+            };
+
+            const handleCanvasMouseDown = (e) => {
+                if (e.button === 0) { 
+                    setSelectedNodeIds([]); setSelectedLinkId(null); setContextMenu({ ...contextMenu, visible: false });
+                    if (mode === "addLink" || mode === "addPath") { setMode("idle"); setLinkFromNodeId(null); return; }
+                    if (mode === "idle") { setIsPanning(true); setMouseStart({ x: e.clientX, y: e.clientY }); }
+                }
+            };
+
+            const handleCanvasMouseMove = (e) => {
+                if (isPanning) {
+                    const dx = e.clientX - mouseStart.x;
+                    const dy = e.clientY - mouseStart.y;
+                    setViewOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+                    setMouseStart({ x: e.clientX, y: e.clientY });
+                    return;
+                }
+                if (isDraggingNodes && selectedNodeIds.length > 0) {
+                    const dx = (e.clientX - mouseStart.x) / scale;
+                    const dy = (e.clientY - mouseStart.y) / scale;
+                    setNodes(prev => prev.map(n => { if (selectedNodeIds.includes(n.id)) return { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } }; return n; }));
+                    setMouseStart({ x: e.clientX, y: e.clientY });
+                }
+            };
+
+            const handleCanvasMouseUp = () => { setIsPanning(false); setIsDraggingNodes(false); };
+            const handleCanvasContextMenu = (e) => { e.preventDefault(); setMode("idle"); setLinkFromNodeId(null); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, type: "canvas" }); };
+
+            const handleNodeMouseDown = (e, node) => {
+                e.stopPropagation(); 
+                if (mode === "addLink") {
+                    if (!linkFromNodeId) setLinkFromNodeId(node.id);
+                    else if (linkFromNodeId && linkFromNodeId !== node.id) {
+                        const id = getNextLinkId(); setLinks(prev => [...prev, { id, source: linkFromNodeId, target: node.id, metric: 10, name: "", active: true }]); setLinkFromNodeId(null); setMode("idle");
+                    }
+                    return;
+                }
+                if (mode === "addPath") {
+                    if (!startNodeId) setStartNodeId(node.id);
+                    else if (startNodeId !== node.id) { setEndNodeId(node.id); setMode("idle"); }
+                    return;
+                }
+                if (e.shiftKey) {
+                    if (selectedNodeIds.includes(node.id)) setSelectedNodeIds(prev => prev.filter(id => id !== node.id));
+                    else setSelectedNodeIds(prev => [...prev, node.id]);
+                } else {
+                    if (!selectedNodeIds.includes(node.id)) setSelectedNodeIds([node.id]);
+                }
+                setSelectedLinkId(null); setIsDraggingNodes(true); setMouseStart({ x: e.clientX, y: e.clientY });
+            };
+
+            const handleNodeDoubleClick = (e, node) => { e.stopPropagation(); setNodeEditor({ open: true, nodeId: node.id, name: node.name, color: node.color, active: node.active !== false }); setContextMenu({ ...contextMenu, visible: false }); };
+            const handleLinkDoubleClick = (e, link) => { e.stopPropagation(); setLinkEditor({ open: true, linkId: link.id, metric: link.metric, name: link.name || "", active: link.active, sourceId: link.source, targetId: link.target }); setContextMenu({ ...contextMenu, visible: false }); };
+            const handleNodeContextMenu = (e, node) => { e.preventDefault(); e.stopPropagation(); if (!selectedNodeIds.includes(node.id)) setSelectedNodeIds([node.id]); setContextMenu({ visible: true, x: e.clientX, y: e.clientY, type: "node", nodeId: node.id }); };
+
+            const handleAddNode = () => {
+                if (!svgRef.current) return;
+                const rect = svgRef.current.getBoundingClientRect();
+                const x = (contextMenu.x - rect.left - viewOffset.x) / scale;
+                const y = (contextMenu.y - rect.top - viewOffset.y) / scale;
+                const id = getNextNodeId();
+                setNodes(prev => [...prev, { id, name: id, color: colors.nodeDefault, position: { x, y }, active: true }]);
+                setContextMenu({ ...contextMenu, visible: false });
+            };
+
+            const deleteNode = () => {
+                const idsToDelete = selectedNodeIds.length > 0 ? selectedNodeIds : (contextMenu.nodeId ? [contextMenu.nodeId] : []);
+                setLinks(prev => prev.filter(l => !idsToDelete.includes(l.source) && !idsToDelete.includes(l.target)));
+                setNodes(prev => prev.filter(n => !idsToDelete.includes(n.id)));
+                if (idsToDelete.includes(startNodeId)) setStartNodeId("");
+                if (idsToDelete.includes(endNodeId)) setEndNodeId("");
+                setContextMenu({ ...contextMenu, visible: false }); setNodeEditor({ ...nodeEditor, open: false }); setSelectedNodeIds([]);
+            };
+
+            const openNodeEditor = () => { const targetId = contextMenu.nodeId || selectedNodeIds[0]; const n = nodes.find(node => node.id === targetId); if (n) { setNodeEditor({ open: true, nodeId: n.id, name: n.name, color: n.color, active: n.active !== false }); setContextMenu({ ...contextMenu, visible: false }); } };
+            const saveNodeEditor = () => { setNodes(prev => prev.map(n => n.id === nodeEditor.nodeId ? { ...n, name: nodeEditor.name, color: nodeEditor.color, active: nodeEditor.active } : n)); setNodeEditor({ ...nodeEditor, open: false }); };
+            const openLinkEditor = () => { const l = links.find(link => link.id === contextMenu.linkId); if (l) { setLinkEditor({ open: true, linkId: l.id, metric: l.metric, name: l.name || "", active: l.active, sourceId: l.source, targetId: l.target }); setContextMenu({ ...contextMenu, visible: false }); } };
+            const saveLinkEditor = () => { setLinks(prev => prev.map(l => l.id === linkEditor.linkId ? { ...l, metric: linkEditor.metric === "" ? 1 : parseInt(linkEditor.metric, 10), name: linkEditor.name, active: linkEditor.active } : l)); setLinkEditor({ ...linkEditor, open: false }); };
+            const deleteLink = () => { const id = linkEditor.open ? linkEditor.linkId : contextMenu.linkId; setLinks(prev => prev.filter(l => l.id !== id)); setContextMenu({ ...contextMenu, visible: false }); setLinkEditor({ ...linkEditor, open: false }); };
+
+            const handleNewTopology = () => { if ((nodes.length > 0 || links.length > 0) && !confirm("Create new topology? Unsaved changes will be lost.")) return; setNodes([]); setLinks([]); clearRoute(); setViewOffset({x: 0, y: 0}); setScale(1); };
+            const handleSaveTopology = () => { const data = { version: "1.0", date: new Date().toISOString(), nodes, links }; const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = "network_topology.json"; document.body.appendChild(link); link.click(); document.body.removeChild(link); };
+            const handleFileChange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (evt) => { try { const json = JSON.parse(evt.target.result); if (json.nodes && json.links) { const cleanNodes = json.nodes.map(n => ({...n, active: n.active !== false})); setNodes(cleanNodes); setLinks(json.links); clearRoute(); setViewOffset({x: 0, y: 0}); } else alert("Invalid file format"); } catch (err) { alert("Error parsing JSON"); } }; reader.readAsText(file); e.target.value = null; };
+
+            useEffect(() => { const handler = (e) => { if (e.key === "Delete" && !nodeEditor.open && !linkEditor.open) { if (selectedNodeIds.length > 0) deleteNode(); else if (selectedLinkId) deleteLink(); } }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, [selectedNodeIds, selectedLinkId, nodeEditor.open, linkEditor.open]);
+
+            useEffect(() => {
+                if (startNodeId && endNodeId && startNodeId !== endNodeId) {
+                    const result = dijkstra(nodes, links, startNodeId, endNodeId);
+                    if (result) { setRoutes(result.paths); setRoute(result.paths[0]); setTotalMetric(result.distance); setActiveRouteIndex(0); }
+                    else { setRoutes([]); setRoute(null); setTotalMetric(null); setActiveRouteIndex(null); }
+                } else { setRoutes([]); setRoute(null); setTotalMetric(null); setActiveRouteIndex(null); }
+            }, [nodes, links, startNodeId, endNodeId]);
+
+            const isLinkInRoute = (linkId) => route?.links?.includes(linkId);
+            const isNodeInRoute = (nodeId) => route?.nodes?.includes(nodeId);
+            const formatPathString = (pathObj) => pathObj.nodes.map(pid => { const n = nodes.find(x => x.id === pid); return n && n.name ? n.name : pid; }).join(" → ");
+            const cursorClass = mode === "addPath" || mode === "addLink" ? "cursor-crosshair" : (isPanning ? 'cursor-grabbing' : 'cursor-default');
+
+            return (
+                <div className={`w-full h-screen flex font-sans transition-colors duration-300 ${colors.bg} ${colors.text}`}>
+                    
+                    <div className="flex-1 relative overflow-hidden">
+                        <svg 
+                            ref={svgRef}
+                            className={`w-full h-full ${cursorClass}`}
+                            onMouseDown={handleCanvasMouseDown}
+                            onMouseMove={handleCanvasMouseMove}
+                            onMouseUp={handleCanvasMouseUp}
+                            onMouseLeave={handleCanvasMouseUp}
+                            onContextMenu={handleCanvasContextMenu}
+                        >
+                            <defs>
+                                <pattern id="grid" x={viewOffset.x} y={viewOffset.y} width={40 * scale} height={40 * scale} patternUnits="userSpaceOnUse">
+                                    <path d={`M ${40 * scale} 0 L 0 0 0 ${40 * scale}`} fill="none" stroke={colors.gridStroke} strokeWidth={0.5 * scale}/>
+                                </pattern>
+                            </defs>
+                            <rect width="100%" height="100%" fill="url(#grid)" />
+                            
+                            <g transform={`translate(${viewOffset.x}, ${viewOffset.y}) scale(${scale})`}>
+                                {/* PACKETS LAYER (Rendered BEFORE links to sit on top of them if needed, or AFTER to float above. AFTER is better) */}
+                                {route && route.nodes.length > 1 && route.links.map((linkId, i) => {
+                                    const link = links.find(l => l.id === linkId);
+                                    if(!link) return null;
+                                    
+                                    // Determine correct direction based on route sequence
+                                    const fromId = route.nodes[i];
+                                    const toId = route.nodes[i+1];
+                                    
+                                    // Use the same geometry generator as the link
+                                    const geo = getLinkGeometry({ ...link, source: fromId, target: toId }, nodes, links);
+                                    if(!geo) return null;
+
+                                    return (
+                                        <g key={`pkt-${link.id}`}>
+                                            <circle r="3" fill={colors.packet}>
+                                                <animateMotion dur="1.5s" repeatCount="indefinite" path={geo.d} />
+                                            </circle>
+                                        </g>
+                                    );
+                                })}
+
+                                {/* LINKS LAYER */}
+                                {links.map((link) => {
+                                    const inPath = isLinkInRoute(link.id);
+                                    const geo = getLinkGeometry(link, nodes, links);
+                                    if(!geo) return null;
+                                    
+                                    const nodeA = nodes.find(n => n.id === link.source);
+                                    const nodeB = nodes.find(n => n.id === link.target);
+                                    const dimLink = (!nodeA.active || !nodeB.active);
+
+                                    return (
+                                        <g key={link.id} 
+                                           onClick={(e) => { e.stopPropagation(); setSelectedLinkId(link.id); setSelectedNodeIds([]); }}
+                                           onDoubleClick={(e) => handleLinkDoubleClick(e, link)}
+                                           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSelectedLinkId(link.id); setContextMenu({ visible:true, x: e.clientX, y: e.clientY, type:"link", linkId: link.id}); }}
+                                           className={`cursor-pointer hover:opacity-80 transition-opacity ${dimLink ? colors.linkDim : ''}`}
+                                        >
+                                            <path d={geo.d} stroke={link.active ? (inPath ? "#f97316" : (selectedLinkId === link.id ? "#94a3b8" : colors.linkInactive)) : "#334155"} strokeWidth={inPath || selectedLinkId === link.id ? 4 : 2} fill="none" strokeDasharray={link.active ? "" : "5,5"} />
+                                            <circle cx={geo.cx} cy={geo.cy} r="10" fill={theme === 'dark' ? '#0f172a' : '#e2e8f0'} stroke={inPath ? "#f97316" : "#64748b"} />
+                                            <text x={geo.cx} y={geo.cy} dy="3" textAnchor="middle" className={`text-[10px] select-none pointer-events-none ${theme === 'dark' ? 'fill-white' : 'fill-slate-800'}`}>{link.metric}</text>
+                                            {link.name && <text x={geo.cx} y={geo.cy - 14} textAnchor="middle" className={`text-[10px] select-none ${theme === 'dark' ? 'fill-slate-400' : 'fill-slate-600'}`}>{link.name}</text>}
+                                        </g>
+                                    );
+                                })}
+
+                                {/* NODES LAYER */}
+                                {nodes.map(node => {
+                                    const isSelected = selectedNodeIds.includes(node.id);
+                                    const inPath = isNodeInRoute(node.id);
+                                    const isActive = node.active !== false; 
+                                    const labelProps = getSmartLabelProps(node);
+
+                                    return (
+                                        <g key={node.id} 
+                                           transform={`translate(${node.position.x}, ${node.position.y})`} 
+                                           onMouseDown={(e) => handleNodeMouseDown(e, node)} 
+                                           onDoubleClick={(e) => handleNodeDoubleClick(e, node)}
+                                           onContextMenu={(e) => handleNodeContextMenu(e, node)} 
+                                           className={`cursor-pointer ${isActive ? '' : 'opacity-50'}`}
+                                        >
+                                            {isSelected && <circle r="28" fill="none" stroke="#38bdf8" strokeWidth="2" strokeDasharray="4,4" className="animate-spin-slow"/>}
+                                            <circle r="24" fill={node.color} stroke={inPath ? "#f97316" : "none"} strokeWidth={inPath ? 3 : 0} strokeDasharray={isActive ? "" : "4,4"} className="transition-all" />
+                                            {!isActive && <text y="5" textAnchor="middle" className="text-lg font-bold fill-red-900/80 pointer-events-none">✕</text>}
+                                            
+                                            <text 
+                                                x={labelProps.x}
+                                                y={labelProps.y}
+                                                textAnchor={labelProps.anchor}
+                                                className={`text-[11px] font-medium text-halo no-select pointer-events-none ${theme === 'dark' ? 'fill-slate-200' : 'fill-slate-800'}`}
+                                                style={{ stroke: colors.textHalo }}
+                                            >
+                                                {node.name}
+                                            </text>
+                                        </g>
+                                    );
+                                })}
+                            </g>
+                        </svg>
+                        
+                        <div className={`absolute bottom-4 left-4 ${colors.panel} border p-2 rounded-lg text-xs flex flex-col gap-1 shadow-xl pointer-events-none`}>
+                            <div className={`font-bold ${colors.textDim}`}>Status</div>
+                            <div>Mode: <span className="text-emerald-400 font-mono">{isPanning ? 'PANNING' : mode.toUpperCase()}</span></div>
+                            <div>Selected: {selectedNodeIds.length} Nodes</div>
+                        </div>
+                    </div>
+
+                    {/* SIDEBAR */}
+                    <div className={`w-80 border-l border-slate-800 flex flex-col shadow-2xl z-10 ${colors.panel}`}>
+                        <div className={`p-4 border-b ${theme==='dark'?'border-slate-800':'border-slate-200'}`}>
+                            <div className="flex justify-between items-center mb-4">
+                                <h1 className="text-lg font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">NetSim Pro</h1>
+                                <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className={`rounded-full p-1.5 w-8 h-8 flex items-center justify-center transition-colors ${theme==='dark'?'bg-slate-800 hover:bg-slate-700 text-yellow-400':'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}>
+                                    <i className={`fa-solid ${theme==='dark'?'fa-sun':'fa-moon'}`}></i>
+                                </button>
+                            </div>
+                            
+                            <div className="mb-3 flex gap-2">
+                                <input type="text" value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} onKeyDown={e=>e.key==='Enter' && handleSearch()} placeholder="Search Node..." className={`w-full rounded px-2 py-1 text-xs outline-none border ${colors.input}`}/>
+                                <button onClick={handleSearch} className="bg-emerald-600 hover:bg-emerald-500 text-white rounded px-2 py-1 text-xs"><i className="fa-solid fa-magnifying-glass"></i></button>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 mb-2">
+                                <button onClick={handleNewTopology} className={`flex items-center justify-center px-2 py-1.5 rounded text-[10px] border transition-colors ${theme==='dark'?'bg-slate-800 border-slate-700 hover:bg-slate-700':'bg-slate-100 border-slate-300 hover:bg-slate-200'}`}><span className="font-bold">NEW</span></button>
+                                <button onClick={handleSaveTopology} className={`flex items-center justify-center px-2 py-1.5 rounded text-[10px] border transition-colors ${theme==='dark'?'bg-slate-800 border-slate-700 hover:bg-slate-700':'bg-slate-100 border-slate-300 hover:bg-slate-200'}`}><span className="font-bold">SAVE</span></button>
+                                <button onClick={()=>fileInputRef.current.click()} className={`flex items-center justify-center px-2 py-1.5 rounded text-[10px] border transition-colors ${theme==='dark'?'bg-slate-800 border-slate-700 hover:bg-slate-700':'bg-slate-100 border-slate-300 hover:bg-slate-200'}`}><span className="font-bold">LOAD</span></button>
+                                <input type="file" ref={fileInputRef} className="hidden" accept=".json" onChange={handleFileChange} />
+                            </div>
+                        </div>
+
+                        <div className={`p-4 border-b space-y-3 ${theme==='dark'?'border-slate-800':'border-slate-200'}`}>
+                            <div className={`flex justify-between items-center text-sm font-bold ${colors.textDim}`}><span>Zoom</span><span>{Math.round(scale * 100)}%</span></div>
+                            <input type="range" min="0.5" max="2" step="0.1" value={scale} onChange={(e) => setScale(Number(e.target.value))} className="w-full accent-emerald-500"/>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                            <div>
+                                <h2 className={`text-xs font-bold uppercase tracking-wider mb-2 ${colors.textDim}`}>Active Route</h2>
+                                {!startNodeId ? <div className="text-xs opacity-60 italic">Right-click a node > "Start Path" to begin.</div> : (
+                                    <div className={`rounded p-3 border space-y-2 ${theme==='dark'?'bg-slate-800/50 border-slate-700':'bg-slate-100 border-slate-300'}`}>
+                                        <div className="flex justify-between text-xs"><span className="opacity-60">From:</span><span className="text-emerald-500 font-mono font-bold">{nodes.find(n=>n.id===startNodeId)?.name || startNodeId}</span></div>
+                                        <div className="flex justify-between text-xs"><span className="opacity-60">To:</span><span className="text-orange-500 font-mono font-bold">{endNodeId ? (nodes.find(n=>n.id===endNodeId)?.name || endNodeId) : "Select..."}</span></div>
+                                        {totalMetric !== null && (<div className={`pt-2 border-t mt-2 ${theme==='dark'?'border-slate-700':'border-slate-300'}`}><div className="flex justify-between font-bold text-sm"><span>Total Cost:</span><span>{totalMetric}</span></div></div>)}
+                                        {routes.length > 0 && <div className="mt-3 space-y-2"><div className={`text-[10px] font-bold uppercase ${colors.textDim}`}>Available Paths ({routes.length})</div>{routes.map((path, idx) => (<div key={idx} onClick={() => { setActiveRouteIndex(idx); setRoute(path); }} className={`p-2 rounded cursor-pointer border text-[11px] transition-colors ${activeRouteIndex === idx ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-600 font-bold' : (theme==='dark'?'bg-slate-900 border-slate-700 hover:bg-slate-800 text-slate-400':'bg-white border-slate-300 hover:bg-slate-50 text-slate-600')}`}><div className="mb-1">Path {idx + 1}</div><div className="truncate font-mono opacity-80 font-normal">{formatPathString(path)}</div></div>))}</div>}
+                                    </div>
+                                )}
+                            </div>
+                            
+                            {(selectedNodeIds.length > 0 || selectedLinkId) && (
+                                <div className="animate-fade-in">
+                                    <h2 className={`text-xs font-bold uppercase tracking-wider mb-2 ${colors.textDim}`}>Properties</h2>
+                                    <div className={`rounded-lg p-3 border text-xs space-y-2 ${theme==='dark'?'bg-slate-800 border-slate-700':'bg-slate-100 border-slate-300'}`}>
+                                        {selectedNodeIds.length === 1 && (() => {
+                                            const n = nodes.find(x => x.id === selectedNodeIds[0]);
+                                            return n ? (<><div className="flex justify-between"><span className="opacity-60">ID:</span> <span>{n.id}</span></div><div className="flex justify-between"><span className="opacity-60">Name:</span> <span className="font-bold">{n.name}</span></div><div className="flex justify-between"><span className="opacity-60">Status:</span> <span className={n.active!==false?"text-emerald-500":"text-red-500"}>{n.active!==false?"Active":"Failure"}</span></div></>) : null;
+                                        })()}
+                                        {selectedNodeIds.length > 1 && (
+                                            <div className="opacity-60 italic">{selectedNodeIds.length} items selected</div>
+                                        )}
+                                        {selectedLinkId && (() => {const l = links.find(x => x.id === selectedLinkId);return l ? (<><div className="flex justify-between"><span className="opacity-60">ID:</span> <span>{l.id}</span></div><div className="flex justify-between"><span className="opacity-60">Metric:</span> <span className="text-emerald-500">{l.metric}</span></div></>) : null;})()}
+                                    </div>
+                                </div>
+                            )}
+                            <div><h2 className={`text-xs font-bold uppercase tracking-wider mb-2 ${colors.textDim}`}>Nodes ({nodes.length})</h2><div className="space-y-1">{nodes.map(n => (<div key={n.id} onClick={(e) => {if(!e.shiftKey) setSelectedNodeIds([n.id]); else { if(selectedNodeIds.includes(n.id)) setSelectedNodeIds(p=>p.filter(x=>x!==n.id)); else setSelectedNodeIds(p=>[...p, n.id]) }}} className={`p-2 rounded cursor-pointer text-xs flex items-center gap-2 border ${selectedNodeIds.includes(n.id) ? 'bg-sky-900/30 border-sky-500' : 'border-transparent hover:bg-opacity-10 hover:bg-black'} ${n.active===false?'opacity-50':''}`}><div className="w-3 h-3 rounded-full border border-white/20" style={{background: n.color}}></div><span className="truncate font-mono">{n.name || "(no name)"}</span><span className="ml-auto text-[10px] opacity-50">{n.id}</span></div>))}</div></div>
+                        </div>
+                    </div>
+
+                    {contextMenu.visible && (
+                        <div className={`fixed z-50 border rounded shadow-xl py-1 min-w-[160px] ${theme==='dark'?'bg-slate-800 border-slate-700':'bg-white border-slate-200'}`} style={{top: contextMenu.y, left: contextMenu.x}}>
+                            {contextMenu.type === "canvas" && <button className={`w-full text-left px-4 py-2 text-xs ${theme==='dark'?'hover:bg-slate-700 text-slate-200':'hover:bg-slate-100 text-slate-800'}`} onClick={handleAddNode}>Add Router Here</button>}
+                            {contextMenu.type === "node" && (<><button className={`w-full text-left px-4 py-2 text-xs ${theme==='dark'?'hover:bg-slate-700 text-slate-200':'hover:bg-slate-100 text-slate-800'}`} onClick={openNodeEditor}>Edit Properties</button><button className={`w-full text-left px-4 py-2 text-xs ${theme==='dark'?'hover:bg-slate-700 text-slate-200':'hover:bg-slate-100 text-slate-800'}`} onClick={() => { setMode("addLink"); setLinkFromNodeId(contextMenu.nodeId); setContextMenu({...contextMenu, visible:false}); }}>Connect Link...</button><button className={`w-full text-left px-4 py-2 text-xs ${theme==='dark'?'hover:bg-slate-700 text-slate-200':'hover:bg-slate-100 text-slate-800'}`} onClick={() => { setMode("addPath"); setStartNodeId(contextMenu.nodeId); setEndNodeId(""); setContextMenu({...contextMenu, visible:false}); }}>Start Path</button><div className={`h-px my-1 ${theme==='dark'?'bg-slate-700':'bg-slate-200'}`}></div><button className="w-full text-left px-4 py-2 text-xs hover:bg-red-900 hover:text-white text-red-500" onClick={deleteNode}>Delete Node</button></>)}
+                            {contextMenu.type === "link" && (<><button className={`w-full text-left px-4 py-2 text-xs ${theme==='dark'?'hover:bg-slate-700 text-slate-200':'hover:bg-slate-100 text-slate-800'}`} onClick={openLinkEditor}>Edit Link</button><button className="w-full text-left px-4 py-2 text-xs hover:bg-red-900 hover:text-white text-red-500" onClick={deleteLink}>Delete Link</button></>)}
+                        </div>
+                    )}
+
+                    {nodeEditor.open && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onMouseDown={handleBackdropMouseDown} onClick={(e) => handleBackdropClick(e, () => setNodeEditor({...nodeEditor, open:false}))}>
+                            <div className={`border p-6 rounded-xl shadow-2xl w-80 ${theme==='dark'?'bg-slate-900 border-slate-700':'bg-white border-slate-300'}`} onClick={e => e.stopPropagation()} onKeyDown={e => e.key === 'Enter' && saveNodeEditor()}>
+                                <h3 className="text-lg font-bold mb-4">Edit Node</h3>
+                                <div className="mb-4"><label className={`block text-xs mb-1 uppercase ${colors.textDim}`}>Name</label><input autoFocus type="text" value={nodeEditor.name} onChange={e => setNodeEditor({...nodeEditor, name: e.target.value})} className={`w-full rounded p-2 text-sm outline-none border ${colors.input}`}/></div>
+                                <div className="mb-4"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={nodeEditor.active} onChange={e => setNodeEditor({...nodeEditor, active: e.target.checked})} className="w-4 h-4 accent-emerald-500"/><span className="text-sm opacity-80">Node Active</span></label></div>
+                                <div className="mb-6"><div className="flex gap-2 flex-wrap">{["#60a5fa", "#34d399", "#f97316", "#facc15", "#a855f7", "#ec4899"].map(c => (<div key={c} onClick={() => setNodeEditor({...nodeEditor, color: c})} className={`w-6 h-6 rounded-full cursor-pointer border-2 ${nodeEditor.color === c ? (theme==='dark'?'border-white scale-110':'border-slate-800 scale-110') : 'border-transparent'}`} style={{backgroundColor: c}}/>))}{["#ffffff", "#cbd5e1", "#64748b", "#334155", "#000000"].map(c => (<div key={c} onClick={() => setNodeEditor({...nodeEditor, color: c})} className={`w-6 h-6 rounded-full cursor-pointer border-2 ${nodeEditor.color === c ? (theme==='dark'?'border-white scale-110':'border-slate-800 scale-110') : 'border-transparent'}`} style={{backgroundColor: c}}/>))}</div></div>
+                                <div className="flex justify-end gap-2"><button onClick={() => setNodeEditor({...nodeEditor, open:false})} className={`px-3 py-2 rounded text-xs ${theme==='dark'?'hover:bg-slate-800':'hover:bg-slate-100'}`}>Cancel</button><button onClick={saveNodeEditor} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Save</button></div>
+                            </div>
+                        </div>
+                    )}
+
+                    {linkEditor.open && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onMouseDown={handleBackdropMouseDown} onClick={(e) => handleBackdropClick(e, () => setLinkEditor({...linkEditor, open:false}))}>
+                            <div className={`border p-6 rounded-xl shadow-2xl w-80 ${theme==='dark'?'bg-slate-900 border-slate-700':'bg-white border-slate-300'}`} onClick={e => e.stopPropagation()} onKeyDown={e => e.key === 'Enter' && saveLinkEditor()}>
+                                <h3 className="text-lg font-bold mb-4">Edit Link</h3>
+                                <div className="mb-4"><label className={`block text-xs mb-1 uppercase ${colors.textDim}`}>Metric</label><input type="text" autoFocus value={linkEditor.metric} onChange={e => { const val = e.target.value; if (/^\d*$/.test(val)) setLinkEditor({...linkEditor, metric: val}); }} className={`w-full rounded p-2 text-sm outline-none border ${colors.input}`} placeholder="10"/></div>
+                                <div className="mb-4"><label className={`block text-xs mb-1 uppercase ${colors.textDim}`}>Name</label><input type="text" value={linkEditor.name} onChange={e => setLinkEditor({...linkEditor, name: e.target.value})} className={`w-full rounded p-2 text-sm outline-none border ${colors.input}`}/></div>
+                                <div className="mb-6"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={linkEditor.active} onChange={e => setLinkEditor({...linkEditor, active: e.target.checked})} className="w-4 h-4 accent-emerald-500"/><span className="text-sm opacity-80">Link Active</span></label></div>
+                                <div className="flex justify-end gap-2"><button onClick={() => setLinkEditor({...linkEditor, open:false})} className={`px-3 py-2 rounded text-xs ${theme==='dark'?'hover:bg-slate-800':'hover:bg-slate-100'}`}>Cancel</button><button onClick={saveLinkEditor} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Save</button></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<NetworkMetricSimulator />);
+    </script>
+</body>
+</html>
