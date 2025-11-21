@@ -36,7 +36,7 @@
 2.  **Connect Links:** Right-click a node $\to$ "Connect Link", then click a second node.
 3.  **Set Metrics:** Double-click a link to change its cost (Metric).
 4.  **Run Traffic:** Right-click a node $\to$ "Start Path", then left-click your Destination node.
-5.  **Simulate Failure:** Double-click a node and uncheck "Node Active" to simulate a power failure/crash.
+5.  **Simulate Failure:** Double-click a node or link and uncheck "Active" to simulate a  failure.
 
 ## 📦 Offline / Air-Gapped Usage
 
