@@ -40,7 +40,7 @@
 
 ## 📦 Offline / Air-Gapped Usage
 
-This tool is can to run without a backend server. To run it in a secure/offline environment:
+This tool is can to run without a backend server just opening the index.html or you can host it on a server:
 
 
 1.  Open `index.html` in offline folder with any modern browser (Chrome, Edge, Firefox).
