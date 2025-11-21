@@ -28,7 +28,7 @@
 | **Context Menu** | Right-Click (Canvas, Node, or Link) |
 | **Delete Item** | `Delete` Key |
 | **Edit Properties** | Double-Click Node or Link |
-| **Quick Save** | `Enter` (while editing text inputs) |
+
 
 ## 🛠️ How to Use
 
