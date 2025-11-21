@@ -2,7 +2,7 @@
 
 **A visual network topology simulator running entirely in the browser.** NetSim Pro helps network engineers and students visualize routing decisions, metric calculations, and failure scenarios using Dijkstra's algorithm and Equal-Cost Multi-Path (ECMP) logic.
 
-### 🚀 [Launch Live Simulator](https://LetMeGoogleIt4You.github.io/NetSim/)
+### 🚀 [Click here to test NetSim](https://LetMeGoogleIt4You.github.io/NetSim/)
 
 ---
 
@@ -40,12 +40,11 @@
 
 ## 📦 Offline / Air-Gapped Usage
 
-This tool is designed to run without a backend server. To run it in a secure/offline environment:
+This tool is can to run without a backend server. To run it in a secure/offline environment:
 
-1.  Download the `index.html` file.
-2.  Download the dependencies (`react.js`, `react-dom.js`, `babel.js`, `tailwind.js`) and place them in the same folder.
-3.  Update the `<script>` tags in the HTML to point to the local files.
-4.  Open `index.html` in any modern browser (Chrome, Edge, Firefox).
+
+1.  Open `index.html` in offline folder with any modern browser (Chrome, Edge, Firefox).
+2.  Option: `python -m http.server 8000` in the same folder
 
 ---
 
