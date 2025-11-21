@@ -49,4 +49,4 @@ This tool is designed to run without a backend server. To run it in a secure/off
 
 ---
 
-*Built with React, Tailwind CSS, and SVG.*
+*Built with React, Tailwind CSS, and SVG (and with AI, I cant code for shit) .*
