@@ -2,7 +2,7 @@
 
 **A visual network topology simulator running entirely in the browser.** NetSim Pro helps network engineers and students visualize routing decisions, metric calculations, and failure scenarios using Dijkstra's algorithm and Equal-Cost Multi-Path (ECMP) logic.
 
-### 🚀 [Click here to test NetSim](https://LetMeGoogleIt4You.github.io/NetSim/)
+### 🚀 [Click here to test NetSim Pro](https://LetMeGoogleIt4You.github.io/NetSim/)
 
 ---
 
